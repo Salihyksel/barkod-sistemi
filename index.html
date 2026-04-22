@@ -375,9 +375,7 @@ function groupIntoLines(items) {
 
 // ── Müşteri adı çıkarma: SAYIN için çok-stratejili (TR uyumlu) ──────────────
 function extractCustomerName(lines) {
-  // Türkçe büyük harf alfabesi (i/I/İ/ı dahil) — isim doğrulaması için
-  const TR_UPPER = /^[A-ZÇĞİIÖŞÜ][A-ZÇĞİIÖŞÜ\s\.'\-]{1,}$/;
-  const TR_NAME  = /^[A-ZÇĞİIÖŞÜa-zçğıiöşü][A-Za-zÇĞİIÖŞÜçğıiöşü\s\.'\-]{1,}$/;
+  console.log('[extractCustomerName] satırlar:', lines);
 
   const cleanName = (raw) => {
     if (!raw) return '';
@@ -385,34 +383,34 @@ function extractCustomerName(lines) {
       .replace(/[\t\r\n]+/g, ' ')
       .replace(/\s+/g, ' ')
       .trim()
-      // baştaki/sondaki noktalama ve iki nokta
       .replace(/^[:\-,;\.\s]+/, '')
       .replace(/[:\-,;\s]+$/, '')
-      // isim başında kalmış 'SAYIN' / 'Sayın' kalıntısı
       .replace(/^say[ıi]n[\s:,\-]*/i, '')
-      // sonunda yapışık unvan/etiket
       .replace(/\s+(?:bey|han[ıi]m|hanim)$/i, '')
       .trim();
     return s;
   };
 
-  const isLikelyName = (s) => {
-    if (!s) return false;
-    if (s.length < 3 || s.length > 80) return false;
-    // İçinde rakam / tipik adres-fatura kelimeleri varsa isim değil
-    if (/[0-9]/.test(s)) return false;
-    if (/(adres|mah\.|mahalle|sok|cad|cd\.|no:|tc|tckn|vergi|telefon|gsm|e-?posta|email|müşteri\s*no|fatura|tarih|kampanya|kodu|şube|şehir|ilçe|posta|kutu)/i.test(s)) return false;
-    // En az 2 kelime (ad + soyad) tercih, ama tek kelime de kabul (orta isim olabilir)
-    const words = s.split(/\s+/).filter(Boolean);
-    if (words.length < 2) return false;
-    if (words.length > 6) return false;
-    // Her kelime harfle başlamalı
-    return words.every(w => /^[A-Za-zÇĞİIÖŞÜçğıiöşü]/.test(w));
+  // Adres / fatura gürültüsü içeriyor mu?
+  const isNoise = (s) => {
+    if (!s) return true;
+    if (/[0-9]/.test(s)) return true;
+    return /(adres|mah\.?|mahalle|mahallesi|sok\.?|sokak|sokağ|cad\.?|cadde|cd\.?|bulvar|blv|no\s*[:\.]|daire|kat\s*[:\.]|apt|apartman|site|blok|tc(kn)?|vergi|tel\.?|telefon|gsm|e[\-\s]?posta|email|m[üu]şteri|fatura|tarih|kampanya|kodu|şube|şehir|il[çc]e|posta|kutu|merkez|ettn|iban|banka|özet|senaryo|sayfa|toplam|tutar|kdv|vkn|t[üu]rkiye|t[üu]rkiy[ea])/i.test(s);
   };
 
-  const tryClean = (raw) => {
+  const isLikelyName = (s, allowSingleWord = false) => {
+    if (!s) return false;
+    if (s.length < 3 || s.length > 80) return false;
+    if (isNoise(s)) return false;
+    const words = s.split(/\s+/).filter(Boolean);
+    if (words.length < (allowSingleWord ? 1 : 2)) return false;
+    if (words.length > 6) return false;
+    return words.every(w => /^[A-Za-zÇĞİIÖŞÜçğıiöşü]/.test(w) && w.length >= 2);
+  };
+
+  const tryClean = (raw, allowSingleWord = false) => {
     const c = cleanName(raw);
-    return isLikelyName(c) ? c : '';
+    return isLikelyName(c, allowSingleWord) ? c : '';
   };
 
   // STRATEJİ 1: Aynı satırda "SAYIN <isim>"
@@ -420,30 +418,39 @@ function extractCustomerName(lines) {
     const m = ln.match(/say[ıi]n[\s:,\-]+(.+)/i);
     if (m) {
       const n = tryClean(m[1]);
-      if (n) return n;
+      if (n) { console.log('[isim S1]', n); return n; }
     }
   }
 
   // STRATEJİ 2: SAYIN tek başına bir satırda → sonraki dolu, geçerli satır
   for (let i = 0; i < lines.length; i++) {
     if (/^\s*say[ıi]n\s*[:,\-]?\s*$/i.test(lines[i])) {
-      // sonraki birkaç satıra bak (boş veya gürültü olabilir)
-      for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
-        const n = tryClean(lines[j]);
-        if (n) return n;
+      // önce 2+ kelimeli bir isim ara (sonraki 6 satırda)
+      for (let j = i + 1; j < Math.min(i + 7, lines.length); j++) {
+        const n = tryClean(lines[j], false);
+        if (n) { console.log('[isim S2a]', n, 'satır', j); return n; }
+        // adres satırına geldiysek artık aşağıda isim yok, çık
+        if (isNoise(lines[j])) break;
+      }
+      // bulamadıysak tek kelimeli isim de kabul (sadece bir sonraki satır)
+      for (let j = i + 1; j < Math.min(i + 3, lines.length); j++) {
+        const n = tryClean(lines[j], true);
+        if (n) { console.log('[isim S2b]', n, 'satır', j); return n; }
+        if (isNoise(lines[j])) break;
       }
     }
   }
 
-  // STRATEJİ 3: Tüm büyük harfli, isim gibi görünen ilk satır
-  // (PDF'lerde müşteri adı genelde tamamen büyük harflidir)
+  // STRATEJİ 3: İsim gibi görünen ilk satır
   for (const ln of lines) {
     const t = ln.trim();
-    if (TR_UPPER.test(t) && isLikelyName(t)) {
+    if (isLikelyName(t)) {
+      console.log('[isim S3]', t);
       return cleanName(t);
     }
   }
 
+  console.log('[isim] bulunamadı');
   return '';
 }
 
